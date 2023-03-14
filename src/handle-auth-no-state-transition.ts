@@ -49,12 +49,11 @@ import {
   ZeroKnowledgeProofRequest,
   ZKPPacker,
 } from "@0xpolygonid/js-sdk";
-import { ethers } from "ethers";
 import path from "path";
 
 import config from "./config";
 
-const { rhsUrl, rpcUrl, contractAddress, walletKey, circuitsFolder } = config;
+const { rhsUrl, rpcUrl, contractAddress, circuitsFolder } = config;
 
 function initDataStorage(): IDataStorage {
   const conf: EthConnectionConfig = {
@@ -171,8 +170,8 @@ async function initPackageManager(
   return mgr;
 }
 
-async function handleAuthRequest() {
-  console.log("=============== handle auth request ===============");
+async function handleAuthRequestNoIssuerStateTransition() {
+  console.log("=============== handle auth request no issuer state transition ===============");
 
   const dataStorage = initDataStorage();
   const credentialWallet = await initCredentialWallet(dataStorage);
@@ -185,7 +184,7 @@ async function handleAuthRequest() {
     circuitStorage
   );
 
-  const { did: userDID, credential: authBJJCredentialUser } = await identityWallet.createIdentity(
+  const { did: userDID } = await identityWallet.createIdentity(
     "http://wallet.com/", // this is url that will be a part of auth bjj credential identifier
     {
       method: core.DidMethod.Iden3,
@@ -198,7 +197,7 @@ async function handleAuthRequest() {
   console.log("=============== user did ===============");
   console.log(userDID.toString());
 
-  const { did: issuerDID, credential: issuerAuthBJJCredential } =
+  const { did: issuerDID } =
     await identityWallet.createIdentity(
       "http://wallet.com/", // this is url that will be a part of auth bjj credential identifier
       {
@@ -231,31 +230,11 @@ async function handleAuthRequest() {
 
   await dataStorage.credential.saveCredential(credential);
 
-  console.log("================= generate Iden3SparseMerkleTreeProof =======================");
-
-  const res = await identityWallet.addCredentialsToMerkleTree([credential], issuerDID);
-
-  console.log("================= push states to rhs ===================");
-
-  await identityWallet.publishStateToRHS(issuerDID, rhsUrl);
-
-  console.log("================= publish to blockchain ===================");
-
-  const ethSigner = new ethers.Wallet(walletKey, (dataStorage.states as EthStateStorage).provider);
-  const txId = await proofService.transitState(
-    issuerDID,
-    res.oldTreeState,
-    true,
-    dataStorage.states,
-    ethSigner
-  );
-  console.log("tx ID:", txId);
-
   console.log("================= generate credentialAtomicSigV2 ===================");
 
   const proofReqSig: ZeroKnowledgeProofRequest = {
     id: 1,
-    circuitId: CircuitId.AtomicQueryMTPV2,
+    circuitId: CircuitId.AtomicQuerySigV2,
     optional: false,
     query: {
       allowedIssuers: ["*"],
@@ -263,8 +242,8 @@ async function handleAuthRequest() {
       context:
         "https://raw.githubusercontent.com/iden3/claim-schema-vocab/main/schemas/json-ld/kyc-v3.json-ld",
       credentialSubject: {
-        documentType: {
-          $eq: 99,
+        birthday: {
+          $lt: 20020301,
         },
       },
     },
@@ -287,32 +266,6 @@ async function handleAuthRequest() {
   };
   console.log(JSON.stringify(authRequest, null, 2));
 
-  const credsWithIden3MTPProof = await identityWallet.generateIden3SparseMerkleTreeProof(
-    issuerDID,
-    res.credentials,
-    txId
-  );
-
-  console.log("W3C credentials with Iden3 MTP:", credsWithIden3MTPProof);
-  await credentialWallet.saveAll(credsWithIden3MTPProof);
-
-  const proofReqMtp: ZeroKnowledgeProofRequest = {
-    id: 1,
-    circuitId: CircuitId.AtomicQueryMTPV2,
-    optional: false,
-    query: {
-      allowedIssuers: ["*"],
-      type: credentialRequest.type,
-      context:
-        "https://raw.githubusercontent.com/iden3/claim-schema-vocab/main/schemas/json-ld/kyc-v3.json-ld",
-      credentialSubject: {
-        birthday: {
-          $lt: 20020101,
-        },
-      },
-    },
-  };
-
   var authRawRequest = new TextEncoder().encode(JSON.stringify(authRequest));
 
   // * on the user side */
@@ -330,10 +283,10 @@ async function handleAuthRequest() {
     userDID,
     authRawRequest
   );
-  console.log(authHandlerRequest);
+  console.log(JSON.stringify(authHandlerRequest, null, 2));
 }
 
-handleAuthRequest()
+handleAuthRequestNoIssuerStateTransition()
   .then(() => {
     process.exit(0);
   })
