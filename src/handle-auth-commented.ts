@@ -1,5 +1,7 @@
 /**
  * Handle authorization request: flow without usage of profiles.
+ * 
+ * Same as handle-auth.ts but with some extra comments, logging and other clarifications.
  *
  * @see https://0xpolygonid.github.io/js-sdk-tutorials/docs/tutorial-basics/auth-handler
  */
@@ -79,7 +81,7 @@ function initDataStorage(): IDataStorage {
 async function initCredentialWallet(dataStorage: IDataStorage): Promise<CredentialWallet> {
   return new CredentialWallet(dataStorage);
 }
-
+ 
 async function initIdentityWallet(
   dataStorage: IDataStorage,
   credentialWallet: ICredentialWallet
@@ -171,6 +173,10 @@ async function initPackageManager(
   return mgr;
 }
 
+const className = (obj: object) => obj.constructor.name;
+
+const json = (obj: object, indent = 2) => JSON.stringify(obj, null, indent);
+
 async function handleAuthRequest() {
   console.log("=============== handle auth request ===============");
 
@@ -195,8 +201,9 @@ async function handleAuthRequest() {
     }
   );
 
-  console.log("=============== user did ===============");
-  console.log(userDID.toString());
+  console.log("\n=============== user did and auth credential===============");
+  console.log(className(userDID), userDID.toString());
+  console.log(className(authBJJCredentialUser), json(authBJJCredentialUser));
 
   const { did: issuerDID, credential: issuerAuthBJJCredential } =
     await identityWallet.createIdentity(
@@ -209,6 +216,10 @@ async function handleAuthRequest() {
       }
     );
 
+  console.log("\n=============== issuer did and auth credential ===============");
+  console.log(className(issuerDID), issuerDID.toString());
+  console.log(className(issuerAuthBJJCredential), json(issuerAuthBJJCredential));
+
   const credentialRequest: CredentialRequest = {
     credentialSchema:
       "https://raw.githubusercontent.com/iden3/claim-schema-vocab/main/schemas/json/KYCAgeCredential-v3.json",
@@ -220,6 +231,10 @@ async function handleAuthRequest() {
     },
     expiration: 12345678888,
   };
+
+  console.log("\n=============== credential request for issuer to sign ===============");
+  console.log(json(credentialRequest));
+
   const credential = await identityWallet.issueCredential(
     issuerDID,
     credentialRequest,
@@ -229,17 +244,32 @@ async function handleAuthRequest() {
     }
   );
 
-  await dataStorage.credential.saveCredential(credential);
+  console.log("\n=============== issued credential, signed ===============");
+  console.log(className(credential), json(credential));
 
-  console.log("================= generate Iden3SparseMerkleTreeProof =======================");
+  dataStorage.credential.saveCredential(credential);
+
+  console.log("================= add credential to issuer ID wallet claims tree =======================");
 
   const res = await identityWallet.addCredentialsToMerkleTree([credential], issuerDID);
+  console.log("old tree state (hashes):", {
+    claimsRoot: res.oldTreeState.claimsRoot.hex(),
+    revocationRoot: res.oldTreeState.revocationRoot.hex(),
+    rootOfRoots: res.oldTreeState.rootOfRoots.hex(),
+    state: res.oldTreeState.state.hex(),
+  });
+  console.log("new tree state (hashes):", {
+    claimsRoot: res.newTreeState.claimsRoot.hex(),
+    revocationRoot: res.newTreeState.revocationRoot.hex(),
+    rootOfRoots: res.newTreeState.rootOfRoots.hex(),
+    state: res.newTreeState.state.hex(),
+  });
 
-  console.log("================= push states to rhs ===================");
+  console.log("================= push updated issuer state to RHS (Reverse Hash Service) ===================");
 
   await identityWallet.publishStateToRHS(issuerDID, rhsUrl);
 
-  console.log("================= publish to blockchain ===================");
+  console.log("================= publish issuer state to blockchain, with state transition proof ===================");
 
   const ethSigner = new ethers.Wallet(walletKey, (dataStorage.states as EthStateStorage).provider);
   const txId = await proofService.transitState(
@@ -249,10 +279,28 @@ async function handleAuthRequest() {
     dataStorage.states,
     ethSigner
   );
-  console.log(txId);
+  console.log("transaction ID:", txId);
 
-  console.log("================= generate credentialAtomicSigV2 ===================");
+  console.log("================= generate Iden3SparseMerkleTreeProof of inclusion in issuer claims tree =======================");
 
+  const credsWithIden3MTPProof = await identityWallet.generateIden3SparseMerkleTreeProof(
+    issuerDID,
+    res.credentials,
+    txId
+  );
+
+  credentialWallet.saveAll(credsWithIden3MTPProof);
+
+  const credWithIden3MTP = credsWithIden3MTPProof[0]
+  for (let proof of credWithIden3MTP.proof as any[]) {
+      if (proof.type === "Iden3SparseMerkleProof") {
+        proof.mtp.siblings = proof.mtp.siblings.map((h: any) => h.hex());
+      }
+  }
+  console.log(className(credWithIden3MTP), json(credWithIden3MTP));
+
+  console.log("================= generate credentialAtomicSigV2 proof request ===================");
+  
   const proofReqSig: ZeroKnowledgeProofRequest = {
     id: 1,
     circuitId: CircuitId.AtomicQuerySigV2,
@@ -263,16 +311,16 @@ async function handleAuthRequest() {
       context:
         "https://raw.githubusercontent.com/iden3/claim-schema-vocab/main/schemas/json-ld/kyc-v3.json-ld",
       credentialSubject: {
-        documentType: {
-          $eq: 99,
+        birthday: {
+          $lt: 20020101,
         },
       },
     },
   };
 
-  console.log("=================  credential auth request ===================");
+  console.log("=================  credential auth request message ===================");
 
-  var authRequest: AuthorizationRequestMessage = {
+  const authRequest: AuthorizationRequestMessage = {
     id: "fe6354fe-3db2-48c2-a779-e39c2dda8d90",
     thid: "fe6354fe-3db2-48c2-a779-e39c2dda8d90",
     typ: PROTOCOL_CONSTANTS.MediaType.PlainMessage,
@@ -285,24 +333,16 @@ async function handleAuthRequest() {
       reason: "verify age",
     },
   };
-  console.log(JSON.stringify(authRequest));
+  console.log(json(authRequest));
 
-  const credsWithIden3MTPProof = await identityWallet.generateIden3SparseMerkleTreeProof(
-    issuerDID,
-    res.credentials,
-    txId
-  );
-
-  console.log(credsWithIden3MTPProof);
-  credentialWallet.saveAll(credsWithIden3MTPProof);
-
-  var authRawRequest = new TextEncoder().encode(JSON.stringify(authRequest));
+  const authRawRequest = new TextEncoder().encode(json(authRequest));
 
   // * on the user side */
 
-  console.log("============== handle auth request ==============");
+  console.log("\n============== user handles auth request ==============");
+
   const authV2Data = await circuitStorage.loadCircuitData(CircuitId.AuthV2);
-  let pm = await initPackageManager(
+  const pm = await initPackageManager(
     authV2Data,
     proofService.generateAuthV2Inputs.bind(proofService),
     proofService.verifyState.bind(proofService)
@@ -313,7 +353,7 @@ async function handleAuthRequest() {
     userDID,
     authRawRequest
   );
-  console.log(JSON.stringify(authHandlerRequest, null, 2));
+  console.log(json(authHandlerRequest));
 }
 
 handleAuthRequest()
