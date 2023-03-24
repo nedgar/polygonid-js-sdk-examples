@@ -1,5 +1,6 @@
 /**
  * Handle authorization request: flow without usage of profiles.
+ * Adapted to issue a KYC Country credential and to verify it's not in list of sanctioned countries.
  *
  * @see https://0xpolygonid.github.io/js-sdk-tutorials/docs/tutorial-basics/auth-handler
  */
@@ -36,6 +37,7 @@ import {
   IStateStorage,
   KMS,
   KmsKeyType,
+  Operators,
   PackageManager,
   PlainPacker,
   Profile,
@@ -49,9 +51,14 @@ import {
   ZeroKnowledgeProofRequest,
   ZKPPacker,
 } from "@0xpolygonid/js-sdk";
+import { Alpha2Code, alpha2ToNumeric } from "i18n-iso-countries";
 import path from "path";
 
 import config from "./config";
+
+function getNumericCountryCode(alpha2: Alpha2Code): number {
+  return Number(alpha2ToNumeric(alpha2));
+}
 
 const { rhsUrl, rpcUrl, contractAddress, circuitsFolder } = config;
 
@@ -117,12 +124,12 @@ async function initCircuitStorage(): Promise<ICircuitStorage> {
     verificationKey: await loader.load(`${CircuitId.StateTransition}/verification_key.json`),
   });
 
-  await circuitStorage.saveCircuitData(CircuitId.AtomicQueryMTPV2, {
-    circuitId: CircuitId.AtomicQueryMTPV2,
-    wasm: await loader.load(`${CircuitId.AtomicQueryMTPV2}/circuit.wasm`),
-    provingKey: await loader.load(`${CircuitId.AtomicQueryMTPV2}/circuit_final.zkey`),
-    verificationKey: await loader.load(`${CircuitId.AtomicQueryMTPV2}/verification_key.json`),
-  });
+  // await circuitStorage.saveCircuitData(CircuitId.AtomicQueryMTPV2, {
+  //   circuitId: CircuitId.AtomicQueryMTPV2,
+  //   wasm: await loader.load(`${CircuitId.AtomicQueryMTPV2}/circuit.wasm`),
+  //   provingKey: await loader.load(`${CircuitId.AtomicQueryMTPV2}/circuit_final.zkey`),
+  //   verificationKey: await loader.load(`${CircuitId.AtomicQueryMTPV2}/verification_key.json`),
+  // });
 
   return circuitStorage;
 }
@@ -210,11 +217,11 @@ async function handleAuthRequestNoIssuerStateTransition() {
 
   const credentialRequest: CredentialRequest = {
     credentialSchema:
-      "https://raw.githubusercontent.com/iden3/claim-schema-vocab/main/schemas/json/KYCAgeCredential-v3.json",
-    type: "KYCAgeCredential",
+      "https://raw.githubusercontent.com/iden3/claim-schema-vocab/main/schemas/json/KYCCountryOfResidenceCredential-v2.json",
+    type: "KYCCountryOfResidenceCredential",
     credentialSubject: {
       id: userDID.toString(),
-      birthday: 19960424,
+      countryCode: getNumericCountryCode("CA"),
       documentType: 99,
     },
     expiration: 12345678888,
@@ -232,6 +239,14 @@ async function handleAuthRequestNoIssuerStateTransition() {
 
   console.log("================= generate credentialAtomicSigV2 ===================");
 
+  const sanctionedCountries: Alpha2Code[] = [
+    "AF", // Afghanistan,
+    "IR", // Iran
+    "KP", // North Korea
+    "SS", // South Sudan
+    "SY", // Syria
+  ];
+
   const proofReqSig: ZeroKnowledgeProofRequest = {
     id: 1,
     circuitId: CircuitId.AtomicQuerySigV2,
@@ -242,8 +257,8 @@ async function handleAuthRequestNoIssuerStateTransition() {
       context:
         "https://raw.githubusercontent.com/iden3/claim-schema-vocab/main/schemas/json-ld/kyc-v3.json-ld",
       credentialSubject: {
-        birthday: {
-          $lt: 20020301,
+        countryCode: {
+          $nin: sanctionedCountries.map(getNumericCountryCode),
         },
       },
     },
@@ -261,7 +276,7 @@ async function handleAuthRequestNoIssuerStateTransition() {
       callbackUrl: "http://testcallback.com",
       message: "message to sign",
       scope: [proofReqSig],
-      reason: "verify age",
+      reason: "verify country",
     },
   };
   console.log(JSON.stringify(authRequest, null, 2));
